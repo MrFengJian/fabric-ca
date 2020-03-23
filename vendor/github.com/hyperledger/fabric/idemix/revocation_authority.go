@@ -7,16 +7,14 @@ SPDX-License-Identifier: Apache-2.0
 package idemix
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/asn1"
-	"math/big"
+	"github.com/tjfoc/gmsm/sm2"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric-amcl/amcl"
 	"github.com/hyperledger/fabric-amcl/amcl/FP256BN"
+	"github.com/hyperledger/fabric/bccsp/utils"
 	"github.com/pkg/errors"
 )
 
@@ -31,15 +29,15 @@ var ProofBytes = map[RevocationAlgorithm]int{
 }
 
 // GenerateLongTermRevocationKey generates a long term signing key that will be used for revocation
-func GenerateLongTermRevocationKey() (*ecdsa.PrivateKey, error) {
-	return ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+func GenerateLongTermRevocationKey() (*sm2.PrivateKey, error) {
+	return sm2.GenerateKey()
 }
 
 // CreateCRI creates the Credential Revocation Information for a certain time period (epoch).
 // Users can use the CRI to prove that they are not revoked.
 // Note that when not using revocation (i.e., alg = ALG_NO_REVOCATION), the entered unrevokedHandles are not used,
 // and the resulting CRI can be used by any signer.
-func CreateCRI(key *ecdsa.PrivateKey, unrevokedHandles []*FP256BN.BIG, epoch int, alg RevocationAlgorithm, rng *amcl.RAND) (*CredentialRevocationInformation, error) {
+func CreateCRI(key *sm2.PrivateKey, unrevokedHandles []*FP256BN.BIG, epoch int, alg RevocationAlgorithm, rng *amcl.RAND) (*CredentialRevocationInformation, error) {
 	if key == nil || rng == nil {
 		return nil, errors.Errorf("CreateCRI received nil input")
 	}
@@ -81,7 +79,7 @@ func CreateCRI(key *ecdsa.PrivateKey, unrevokedHandles []*FP256BN.BIG, epoch int
 // Note that even if we use no revocation (i.e., alg = ALG_NO_REVOCATION), we need
 // to verify the signature to make sure the issuer indeed signed that no revocation
 // is used in this epoch.
-func VerifyEpochPK(pk *ecdsa.PublicKey, epochPK *ECP2, epochPkSig []byte, epoch int, alg RevocationAlgorithm) error {
+func VerifyEpochPK(pk *sm2.PublicKey, epochPK *ECP2, epochPkSig []byte, epoch int, alg RevocationAlgorithm) error {
 	if pk == nil || epochPK == nil {
 		return errors.Errorf("EpochPK invalid: received nil input")
 	}
@@ -95,12 +93,12 @@ func VerifyEpochPK(pk *ecdsa.PublicKey, epochPK *ECP2, epochPkSig []byte, epoch 
 	}
 	digest := sha256.Sum256(bytesToSign)
 
-	var sig struct{ R, S *big.Int }
-	if _, err := asn1.Unmarshal(epochPkSig, &sig); err != nil {
-		return errors.Wrap(err, "failed unmashalling signature")
+	r, s, err := utils.UnmarshalECDSASignature(epochPkSig)
+	if err != nil {
+		return errors.Wrap(err, "failed to unmarshal ECDSA signature")
 	}
 
-	if !ecdsa.Verify(pk, digest[:], sig.R, sig.S) {
+	if !sm2.Verify(pk, digest[:], r, s) {
 		return errors.Errorf("EpochPKSig invalid")
 	}
 

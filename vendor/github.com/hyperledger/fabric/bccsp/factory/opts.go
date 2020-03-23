@@ -13,7 +13,6 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-
 package factory
 
 // GetDefaultOpts offers a default implementation for Opts
@@ -26,6 +25,19 @@ func GetDefaultOpts() *FactoryOpts {
 			SecLevel:   256,
 
 			Ephemeral: true,
+		},
+	}
+}
+
+// GetGMDefaultOpts offers a default implementation for GM Opts
+// returns a new instance every time
+func GetGMDefaultOpts() *FactoryOpts {
+	return &FactoryOpts{
+		ProviderName: "GM",
+		SwOpts: &SwOpts{
+			HashFamily: "SM3",
+			SecLevel:   256,
+			Ephemeral:  true,
 		},
 	}
 }

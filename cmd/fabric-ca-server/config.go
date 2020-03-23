@@ -338,7 +338,7 @@ signing:
 csr:
    cn: <<<COMMONNAME>>>
    keyrequest:
-     algo: ecdsa
+     algo: sm2
      size: 256
    names:
       - C: US
@@ -382,9 +382,9 @@ idemix:
 # crypto library implementation to use
 #############################################################################
 bccsp:
-    default: SW
+    default: GM
     sw:
-        hash: SHA2
+        hash: SM3
         security: 256
         filekeystore:
             # The directory used for the software file-based keystore

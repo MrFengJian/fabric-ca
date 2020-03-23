@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/pem"
+	"github.com/tjfoc/gmsm/sm2"
 	"time"
 
 	"github.com/cloudflare/cfssl/config"
@@ -145,7 +146,14 @@ func handleEnroll(ctx *serverRequestContextImpl, id string) (interface{}, error)
 		req.Extensions = append(req.Extensions, *ext)
 	}
 	// Sign the certificate
-	cert, err := ca.enrollSigner.Sign(req.SignRequest)
+	var cert []byte
+	if ca.isGm() {
+		// 使用gmca.go的实现，签发国密证书
+		cert, err = signCert(req.SignRequest, ca)
+	} else {
+		cert, err = ca.enrollSigner.Sign(req.SignRequest)
+	}
+
 	if err != nil {
 		return nil, errors.WithMessage(err, "Certificate signing failure")
 	}
@@ -179,7 +187,18 @@ func processSignRequest(id string, req *signer.SignRequest, ca *CA, ctx *serverR
 		return cferr.Wrap(cferr.CSRError,
 			cferr.BadRequest, errors.New("not a certificate or csr"))
 	}
-	csrReq, err := x509.ParseCertificateRequest(block.Bytes)
+	var csrReq *x509.CertificateRequest
+	var err error
+	if ca.isGm(){
+		if sm2CsrReq,err1:=sm2.ParseCertificateRequest(block.Bytes);err1!=nil{
+			err=err1
+		}else{
+			csrReq = ParseSm2CertificateRequest2X509(sm2CsrReq)
+		}
+	}else{
+		csrReq, err = x509.ParseCertificateRequest(block.Bytes)
+	}
+
 	if err != nil {
 		return err
 	}

@@ -25,6 +25,9 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"github.com/hyperledger/fabric/bccsp/gm"
+	"github.com/tjfoc/gmsm/sm2"
+	gtls "github.com/tjfoc/gmtls"
 	"io/ioutil"
 	"strings"
 	_ "time" // for ocspSignerFromConfig
@@ -146,6 +149,8 @@ func getBCCSPKeyOpts(kr csr.KeyRequest, ephemeral bool) (opts bccsp.KeyGenOpts, 
 		default:
 			return nil, errors.Errorf("Invalid ECDSA key size: %d", kr.Size())
 		}
+	case "sm2":
+		return &bccsp.SM2KeyGenOpts{Temporary: ephemeral}, nil
 	default:
 		return nil, errors.Errorf("Invalid algorithm: %s", kr.Algo())
 	}
@@ -156,13 +161,26 @@ func GetSignerFromCert(cert *x509.Certificate, csp bccsp.BCCSP) (bccsp.Key, cryp
 	if csp == nil {
 		return nil, nil, errors.New("CSP was not initialized")
 	}
+	//var raw interface{}
+	//log.Debugf("cert public key type [%T]", cert.PublicKey)
+	//switch cert.PublicKey.(type) {
+	//case sm2.PublicKey:
+	//	log.Debug("use sm2 cert to import public key")
+	//	sm2Cert := gm.ParseX509Certificate2Sm2(cert)
+	//	raw = sm2Cert
+	//default:
+	//	log.Debug("use x509 cert to import public key")
+	//	raw =
+	//}
+	sm2Cert := gm.ParseX509Certificate2Sm2(cert)
 	// get the public key in the right format
-	certPubK, err := csp.KeyImport(cert, &bccsp.X509PublicKeyImportOpts{Temporary: true})
+	certPubK, err := csp.KeyImport(sm2Cert, &bccsp.X509PublicKeyImportOpts{Temporary: true})
 	if err != nil {
 		return nil, nil, errors.WithMessage(err, "Failed to import certificate's public key")
 	}
 	// Get the key given the SKI value
 	ski := certPubK.SKI()
+	log.Debug("import public key with ski:%s", hex.EncodeToString(ski))
 	privateKey, err := csp.GetKey(ski)
 	if err != nil {
 		return nil, nil, errors.WithMessage(err, "Could not find matching private key for SKI")
@@ -172,6 +190,37 @@ func GetSignerFromCert(cert *x509.Certificate, csp bccsp.BCCSP) (bccsp.Key, cryp
 	if !privateKey.Private() {
 		return nil, nil, errors.Errorf("The private key associated with the certificate with SKI '%s' was not found", hex.EncodeToString(ski))
 	}
+	// Construct and initialize the signer
+	signer, err := cspsigner.New(csp, privateKey)
+	if err != nil {
+		return nil, nil, errors.WithMessage(err, "Failed to load ski from bccsp")
+	}
+	return privateKey, signer, nil
+}
+
+// GetSignerFromSM2Cert load private key represented by ski and return bccsp signer that conforms to crypto.Signer
+func GetSignerFromSM2Cert(cert *sm2.Certificate, csp bccsp.BCCSP) (bccsp.Key, crypto.Signer, error) {
+	if csp == nil {
+		return nil, nil, fmt.Errorf("CSP was not initialized")
+	}
+
+	log.Debugf("begin csp.KeyImport,cert.PublicKey is %T   csp:%T", cert.PublicKey, csp)
+
+	// get the public key in the right format
+	certPubK, err := csp.KeyImport(cert, &bccsp.SM2PublicKeyImportOpts{Temporary: true})
+	if err != nil {
+		return nil, nil, fmt.Errorf("Failed to import certificate's public key: %s", err.Error())
+	}
+
+	ski := certPubK.SKI()
+	log.Debug("import public key with ski:%s", hex.EncodeToString(ski))
+
+	// Get the key given the SKI value
+	privateKey, err := csp.GetKey(ski)
+	if err != nil {
+		return nil, nil, errors.Errorf("The private key associated with the certificate with SKI '%s' was not found", hex.EncodeToString(certPubK.SKI()))
+	}
+
 	// Construct and initialize the signer
 	signer, err := cspsigner.New(csp, privateKey)
 	if err != nil {
@@ -190,7 +239,13 @@ func GetSignerFromCertFile(certFile string, csp bccsp.BCCSP) (bccsp.Key, crypto.
 	// Parse certificate
 	parsedCa, err := helpers.ParseCertificatePEM(certBytes)
 	if err != nil {
-		return nil, nil, nil, err
+		// 尝试下国密
+		log.Infof("parse cert error %s,Maybe it is a sm2 cert,try", err.Error())
+		sm2Cert, err := sm2.ReadCertificateFromPem(certFile)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		parsedCa = gm.ParseSm2Certificate2X509(sm2Cert)
 	}
 	// Get the signer from the cert
 	key, cspSigner, err := GetSignerFromCert(parsedCa, csp)
@@ -227,6 +282,15 @@ func ImportBCCSPKeyFromPEM(keyFile string, myCSP bccsp.BCCSP, temporary bool) (b
 		return nil, errors.WithMessage(err, fmt.Sprintf("Failed parsing private key from %s", keyFile))
 	}
 	switch key.(type) {
+	case *sm2.PrivateKey:
+		// 正常来说，这里获取到的bccsp实现已经是国密了
+		log.Infof("import sm2 private key with bccsp %T", myCSP)
+		block, _ := pem.Decode(keyBuff)
+		priv, err := myCSP.KeyImport(block.Bytes, &bccsp.SM2PrivateKeyImportOpts{Temporary: true})
+		if err != nil {
+			return nil, fmt.Errorf("Failed to convert SM2 private key from %s: %s", keyFile, err.Error())
+		}
+		return priv, nil
 	case *ecdsa.PrivateKey:
 		priv, err := utils.PrivateKeyToDER(key.(*ecdsa.PrivateKey))
 		if err != nil {
@@ -295,6 +359,64 @@ func LoadX509KeyPair(certFile, keyFile string, csp bccsp.BCCSP) (*tls.Certificat
 			log.Debugf("Could not load TLS certificate with BCCSP: %s", err)
 			log.Debugf("Attempting fallback with certfile %s and keyfile %s", certFile, keyFile)
 			fallbackCerts, err := tls.LoadX509KeyPair(certFile, keyFile)
+			if err != nil {
+				return nil, errors.Wrapf(err, "Could not get the private key %s that matches %s", keyFile, certFile)
+			}
+			cert = &fallbackCerts
+		} else {
+			return nil, errors.WithMessage(err, "Could not load TLS certificate with BCCSP")
+		}
+
+	}
+
+	return cert, nil
+}
+
+// LoadKeyPair for sm2
+func LoadX509KeyPairSM2(certFile, keyFile string, csp bccsp.BCCSP) (*gtls.Certificate, error) {
+
+	certPEMBlock, err := ioutil.ReadFile(certFile)
+	if err != nil {
+		return nil, err
+	}
+
+	cert := &gtls.Certificate{}
+	var skippedBlockTypes []string
+	for {
+		var certDERBlock *pem.Block
+		certDERBlock, certPEMBlock = pem.Decode(certPEMBlock)
+		if certDERBlock == nil {
+			break
+		}
+		if certDERBlock.Type == "CERTIFICATE" {
+			cert.Certificate = append(cert.Certificate, certDERBlock.Bytes)
+		} else {
+			skippedBlockTypes = append(skippedBlockTypes, certDERBlock.Type)
+		}
+	}
+
+	if len(cert.Certificate) == 0 {
+		if len(skippedBlockTypes) == 0 {
+			return nil, errors.Errorf("Failed to find PEM block in file %s", certFile)
+		}
+		if len(skippedBlockTypes) == 1 && strings.HasSuffix(skippedBlockTypes[0], "PRIVATE KEY") {
+			return nil, errors.Errorf("Failed to find certificate PEM data in file %s, but did find a private key; PEM inputs may have been switched", certFile)
+		}
+		return nil, errors.Errorf("Failed to find \"CERTIFICATE\" PEM block in file %s after skipping PEM blocks of the following types: %v", certFile, skippedBlockTypes)
+	}
+
+	sm2Cert, err := sm2.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		return nil, err
+	}
+
+	x509Cert := gm.ParseSm2Certificate2X509(sm2Cert)
+	_, cert.PrivateKey, err = GetSignerFromCert(x509Cert, csp)
+	if err != nil {
+		if keyFile != "" {
+			log.Debugf("Could not load TLS certificate with BCCSP: %s", err)
+			log.Debugf("Attempting fallback with certfile %s and keyfile %s", certFile, keyFile)
+			fallbackCerts, err := gtls.LoadX509KeyPair(certFile, keyFile)
 			if err != nil {
 				return nil, errors.Wrapf(err, "Could not get the private key %s that matches %s", keyFile, certFile)
 			}

@@ -7,13 +7,16 @@ SPDX-License-Identifier: Apache-2.0
 package idemix
 
 import (
-	"crypto/ecdsa"
+	"github.com/tjfoc/gmsm/sm2"
 	"sort"
 
 	"github.com/hyperledger/fabric-amcl/amcl"
 	"github.com/hyperledger/fabric-amcl/amcl/FP256BN"
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/pkg/errors"
 )
+
+var idemixLogger = flogging.MustGetLogger("idemix")
 
 // signLabel is the label used in zero-knowledge proof (ZKP) to identify that this ZKP is a signature of knowledge
 const signLabel = "sign"
@@ -240,7 +243,7 @@ func NewSignature(cred *Credential, sk *FP256BN.BIG, Nym *FP256BN.ECP, RNym *FP2
 // Disclosure steers which attributes it expects to be disclosed
 // attributeValues contains the desired attribute values.
 // This function will check that if attribute i is disclosed, the i-th attribute equals attributeValues[i].
-func (sig *Signature) Ver(Disclosure []byte, ipk *IssuerPublicKey, msg []byte, attributeValues []*FP256BN.BIG, rhIndex int, revPk *ecdsa.PublicKey, epoch int) error {
+func (sig *Signature) Ver(Disclosure []byte, ipk *IssuerPublicKey, msg []byte, attributeValues []*FP256BN.BIG, rhIndex int, revPk *sm2.PublicKey, epoch int) error {
 	// Validate inputs
 	if ipk == nil || revPk == nil {
 		return errors.Errorf("cannot verify idemix signature: received nil input")
@@ -373,7 +376,7 @@ func (sig *Signature) Ver(Disclosure []byte, ipk *IssuerPublicKey, msg []byte, a
 
 	if *ProofC != *HashModOrder(proofData) {
 		// This debug line helps identify where the mismatch happened
-		logger.Printf("Signature Verification : \n"+
+		idemixLogger.Debugf("Signature Verification : \n"+
 			"	[t1:%v]\n,"+
 			"	[t2:%v]\n,"+
 			"	[t3:%v]\n,"+
@@ -395,8 +398,7 @@ func (sig *Signature) Ver(Disclosure []byte, ipk *IssuerPublicKey, msg []byte, a
 			nonRevokedProofBytes,
 			ipk.Hash,
 			Disclosure,
-			msg,
-		)
+			msg)
 		return errors.Errorf("signature invalid: zero-knowledge proof is invalid")
 	}
 

@@ -78,7 +78,9 @@ type PKCS11Opts struct {
 	HashFamily string `mapstructure:"hash" json:"hash"`
 
 	// Keystore options
-	Ephemeral bool `mapstructure:"tempkeys,omitempty" json:"tempkeys,omitempty"`
+	Ephemeral     bool               `mapstructure:"tempkeys,omitempty" json:"tempkeys,omitempty"`
+	FileKeystore  *FileKeystoreOpts  `mapstructure:"filekeystore,omitempty" json:"filekeystore,omitempty"`
+	DummyKeystore *DummyKeystoreOpts `mapstructure:"dummykeystore,omitempty" json:"dummykeystore,omitempty"`
 
 	// PKCS11 options
 	Library    string `mapstructure:"library" json:"library"`
@@ -87,3 +89,12 @@ type PKCS11Opts struct {
 	SoftVerify bool   `mapstructure:"softwareverify,omitempty" json:"softwareverify,omitempty"`
 	Immutable  bool   `mapstructure:"immutable,omitempty" json:"immutable,omitempty"`
 }
+
+// FileKeystoreOpts currently only ECDSA operations go to PKCS11, need a keystore still
+// Pluggable Keystores, could add JKS, P12, etc..
+type FileKeystoreOpts struct {
+	KeyStorePath string `mapstructure:"keystore" json:"keystore" yaml:"KeyStore"`
+}
+
+// DummyKeystoreOpts is placeholder for testing purposes
+type DummyKeystoreOpts struct{}

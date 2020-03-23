@@ -137,7 +137,7 @@ tls:
 csr:
   cn: <<<ENROLLMENT_ID>>>
   keyrequest:
-    algo: ecdsa
+    algo: sm2
     size: 256
   serialnumber:
   names:
@@ -189,9 +189,9 @@ caname:
 # crypto implementation library to use
 #############################################################################
 bccsp:
-    default: SW
+    default: GM
     sw:
-        hash: SHA2
+        hash: SM3
         security: 256
         filekeystore:
             # The directory used for the software file-based keystore

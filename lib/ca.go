@@ -14,11 +14,14 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"github.com/hyperledger/fabric/bccsp/gm"
+	"github.com/tjfoc/gmsm/sm2"
 	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -264,6 +267,7 @@ func (ca *CA) initKeyMaterial(renew bool) error {
 // Get the CA certificate for this CA
 func (ca *CA) getCACert() (cert []byte, err error) {
 	if ca.Config.Intermediate.ParentServer.URL != "" {
+		// 中继CA按国密算法，向父CA申请证书
 		// This is an intermediate CA, so call the parent fabric-ca-server
 		// to get the cert
 		log.Debugf("Getting CA cert; parent server URL is %s", util.GetMaskedURL(ca.Config.Intermediate.ParentServer.URL))
@@ -289,6 +293,11 @@ func (ca *CA) getCACert() (cert []byte, err error) {
 		}
 		if clientCfg.Enrollment.CSR.CA == nil {
 			clientCfg.Enrollment.CSR.CA = &cfcsr.CAConfig{PathLength: 0, PathLenZero: true}
+		}
+		// 设置keyrequest为国密还是ecdsa
+		if ca.isGm() {
+			clientCfg.Enrollment.CSR.KeyRequest = &api.BasicKeyRequest{Algo: "sm2",
+				Size: ca.Config.CSP.SwOpts.SecLevel}
 		}
 		log.Debugf("Intermediate enrollment request: %+v, CSR: %+v, CA: %+v",
 			clientCfg.Enrollment, clientCfg.Enrollment.CSR, clientCfg.Enrollment.CSR.CA)
@@ -345,12 +354,17 @@ func (ca *CA) getCACert() (cert []byte, err error) {
 		}
 		log.Debugf("Root CA certificate request: %+v", req)
 		// Generate the key/signer
-		_, cspSigner, err := util.BCCSPKeyRequestGenerate(&req, ca.csp)
+		key, cspSigner, err := util.BCCSPKeyRequestGenerate(&req, ca.csp)
 		if err != nil {
 			return nil, err
 		}
-		// Call CFSSL to initialize the CA
-		cert, _, err = initca.NewFromSigner(&req, cspSigner)
+		if ca.isGm() {
+			// sm2 to generate cert
+			cert, err = createGmSm2Cert(key, &req, cspSigner)
+		} else {
+			// Call CFSSL to initialize the CA
+			cert, _, err = initca.NewFromSigner(&req, cspSigner)
+		}
 		if err != nil {
 			return nil, errors.WithMessage(err, "Failed to create new CA certificate")
 		}
@@ -473,6 +487,19 @@ func (ca *CA) initConfig() (err error) {
 // VerifyCertificate verifies that 'cert' was issued by this CA
 // Return nil if successful; otherwise, return an error.
 func (ca *CA) VerifyCertificate(cert *x509.Certificate) error {
+	// 按国密处理
+	if ca.isGm() {
+		sm2Cert := gm.ParseX509Certificate2Sm2(cert)
+		opts, err := ca.getSm2VerifyOptions()
+		if err != nil {
+			return errors.WithMessage(err, "Failed to get verify options")
+		}
+		_, err = sm2Cert.Verify(*opts)
+		if err != nil {
+			return errors.WithMessage(err, "Failed to verify certificate")
+		}
+		return nil
+	}
 	opts, err := ca.getVerifyOptions()
 	if err != nil {
 		return errors.WithMessage(err, "Failed to get verify options")
@@ -482,6 +509,39 @@ func (ca *CA) VerifyCertificate(cert *x509.Certificate) error {
 		return errors.WithMessage(err, "Failed to verify certificate")
 	}
 	return nil
+}
+
+func (ca *CA) isGm() bool {
+	return strings.ToUpper(ca.Config.CSP.ProviderName) == "GM"
+}
+
+func (ca *CA) getSm2VerifyOptions() (*sm2.VerifyOptions, error) {
+	chain, err := ca.getCAChain()
+	if err != nil {
+		return nil, err
+	}
+	block, rest := pem.Decode(chain)
+	if block == nil {
+		return nil, errors.New("No root certificate was found")
+	}
+	rootCert, err := sm2.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to parse root certificate: %s", err)
+	}
+	rootPool := sm2.NewCertPool()
+	rootPool.AddCert(rootCert)
+	var intPool *sm2.CertPool
+	if len(rest) > 0 {
+		intPool = sm2.NewCertPool()
+		if !intPool.AppendCertsFromPEM(rest) {
+			return nil, errors.New("Failed to add intermediate PEM certificates")
+		}
+	}
+	return &sm2.VerifyOptions{
+		Roots:         rootPool,
+		Intermediates: intPool,
+		KeyUsages:     []sm2.ExtKeyUsage{sm2.ExtKeyUsageAny},
+	}, nil
 }
 
 // Get the options to verify
@@ -1148,13 +1208,28 @@ func validateMatchingKeys(cert *x509.Certificate, keyFile string) error {
 			return errors.New("Public key and private key do not match")
 		}
 	case *ecdsa.PublicKey:
-		privKey, err := util.GetECPrivateKey(keyPEM)
-		if err != nil {
-			return err
-		}
+		log.Debug("Check that public key and private key match11")
+		pub, _ := cert.PublicKey.(*ecdsa.PublicKey)
+		log.Debug("check public key")
+		switch pub.Curve {
+		case sm2.P256Sm2():
+			log.Debug("validating sm2 public key")
+			privKey, err := util.GetSM2PrivateKey(keyPEM)
+			if err != nil {
+				return err
+			}
+			if pub.X.Cmp(privKey.X) != 0 || pub.Y.Cmp(privKey.Y) != 0 {
+				return errors.New("sm2 private key does not match public key")
+			}
+		default:
+			privKey, err := util.GetECPrivateKey(keyPEM)
+			if err != nil {
+				return err
+			}
 
-		if privKey.PublicKey.X.Cmp(pubKey.(*ecdsa.PublicKey).X) != 0 {
-			return errors.New("Public key and private key do not match")
+			if privKey.PublicKey.X.Cmp(pubKey.(*ecdsa.PublicKey).X) != 0 {
+				return errors.New("Public key and private key do not match")
+			}
 		}
 	}
 

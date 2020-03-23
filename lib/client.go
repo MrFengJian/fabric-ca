@@ -152,6 +152,7 @@ func (c *Client) initHTTPClient() error {
 			return err
 		}
 
+		//TODO: 无法使用tls？？？
 		tlsConfig, err2 := tls.GetClientTLSConfig(&c.Config.TLS, c.csp)
 		if err2 != nil {
 			return fmt.Errorf("Failed to get client TLS config: %s", err2)
@@ -204,7 +205,12 @@ func (c *Client) GenCSR(req *api.CSRInfo, id string) ([]byte, bccsp.Key, error) 
 	cr.CN = id
 
 	if (cr.KeyRequest == nil) || (cr.KeyRequest.Size() == 0 && cr.KeyRequest.Algo() == "") {
-		cr.KeyRequest = newCfsslBasicKeyRequest(api.NewBasicKeyRequest())
+		if strings.ToUpper(c.Config.CSP.ProviderName) == "GM" {
+			cr.KeyRequest = newCfsslBasicKeyRequest(&api.BasicKeyRequest{Algo: "sm2", Size: c.Config.CSP.SwOpts.SecLevel})
+		} else {
+			// 默认使用ecdsa，如果使用国密，这默认sm2
+			cr.KeyRequest = newCfsslBasicKeyRequest(api.NewBasicKeyRequest())
+		}
 	}
 
 	key, cspSigner, err := util.BCCSPKeyRequestGenerate(cr, c.csp)
@@ -213,7 +219,12 @@ func (c *Client) GenCSR(req *api.CSRInfo, id string) ([]byte, bccsp.Key, error) 
 		return nil, nil, err
 	}
 
-	csrPEM, err := csr.Generate(cspSigner, cr)
+	var csrPEM []byte
+	if strings.ToUpper(c.Config.CSP.ProviderName) == "GM" {
+		csrPEM, err = generate(cspSigner, cr, key)
+	} else {
+		csrPEM, err = csr.Generate(cspSigner, cr)
+	}
 	if err != nil {
 		log.Debugf("failed generating CSR: %s", err)
 		return nil, nil, err
